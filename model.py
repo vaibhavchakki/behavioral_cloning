@@ -4,6 +4,8 @@ import os, sys
 import cv2
 import matplotlib.pyplot as plt
 from scipy import misc
+import math
+import json
 
 from keras.models import Model, Sequential
 from keras.layers import Dense, Dropout, Input, Convolution2D, MaxPooling2D, Flatten, Lambda
@@ -14,8 +16,9 @@ import sklearn.metrics as metrics
 
 #
 # load only 500 datasets with 0 steering
-num_load_0_steering = 500
-
+num_load_0_steering = 50
+img_data   = []
+angle_data = []
 #
 # crop the image 20 pixels from top and 25 pixels from bottom
 def crop(img):
@@ -46,8 +49,9 @@ def resize(img, height, length):
 # pre-process the loaded image
 def preprocess_image(img):
     img = crop(img)
-    img = rgb2hsv(img)
-    img = resize(img, 64, 64)
+    #img = rgb2hsv(img)
+    img = resize(img, 128, 128)
+    img = normalize(img)
     return img
 
 def generate_training_data():
@@ -73,19 +77,20 @@ def generate_training_data():
         img = load_image(path)
         img = preprocess_image(img)
 
-        if (steering_angle == 0):
+
+        if abs(steering_angle) < 0.1:
             steering_0 = steering_0 + 1
 
-        if (steering_angle == 0) and (steering_0 > num_load_0_steering):
+        if steering_0 > num_load_0_steering:
             continue
 
-        augment = np.random.randint(2)
-
-        if augment % 2 == 0:
+        if abs(steering_angle) > 0.3:
             h_img = cv2.flip(img, 1)
-            data = (h_img, -steering_angle)
+            img_data.append(h_img)
+            angle_data.append(-steering_angle)
 
-        data = (img, steering_angle)
+        img_data.append(img)
+        angle_data.append(steering_angle)
 
 
 
@@ -94,7 +99,7 @@ def get_model():
 
     #
     # Modeling NVIDIA network here, add Batchnormalization
-    model.add(BatchNormalization(mode=2, axis=1, input_shape=(64, 64, 3)))
+    model.add(BatchNormalization(mode=2, axis=1, input_shape=(128, 128, 3)))
 
     #
     # Convolution layer 1
@@ -163,11 +168,24 @@ def get_model():
 
     return model
 
-def training_generator():
-    
 
+def training_generator(num_batches, batch_size):
+
+    while True:
+        x = np.zeros((batch_size, 128, 128, 3))
+        y = np.zeros(batch_size)
+
+        for n in range(num_batches):
+            begin = (n * batch_size)
+            end   = (n * batch_size) + batch_size
+
+            x = img_data[begin:end]
+            y = angle_data[begin:end]
+
+            yield x, y
 
 def main():
+
     #
     # Number of epochs
     nb_epoch = 5
@@ -177,15 +195,31 @@ def main():
     n_batch_size = 64
 
     #
+    # Generate training data
+    generate_training_data()
+    print("Data generate done")
+    #num_batches = int(math.ceil(len(steering_data) / float(n_batch_size)))
+    num_batches = int(len(steering_data) / float(n_batch_size))
+
+    #
     # Get model & compile
     model = get_model()
     adam = Adam(lr=0.0001)
     model.compile(loss='mse', optimizer='adam', metrics=['mse', 'accuracy'])
 
-    for epoch in range(nb_epoch):
-        print("Epoch: %d" % epoch)
+    print("Model compiled")
 
+    model.fit_generator(training_generator(num_batches, n_batch_size),
+                        samples_per_epoch=num_batches * n_batch_size,
+                        nb_epoch=1,
+                        verbose=1,
+                        callbacks=[],
+                        validation_data=None)
 
+    with open("model.json", "w") as fp:
+        json.dump(model.to_json(), fp)
+
+    model.save_weights("model.h5", overwrite=True)
 
 
 

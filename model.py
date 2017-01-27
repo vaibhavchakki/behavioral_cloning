@@ -14,11 +14,10 @@ from keras.optimizers import Adam
 import sklearn.metrics as metrics
 
 
-#
-# load only 500 datasets with 0 steering
-num_load_0_steering = 50
-img_data   = []
-angle_data = []
+new_img_width  = 80
+new_img_height = 80
+STEERING_OFFSET = 0.30
+
 #
 # crop the image 20 pixels from top and 25 pixels from bottom
 def crop(img):
@@ -36,62 +35,80 @@ def load_image(path):
     return cv2.imread(path)
 
 #
-# normalize the image data
-def normalize(X):
-    X = X.astype('float32')
-    X = X/255.0 - 0.5
-    return X
-
-def resize(img, height, length):
-    return cv2.resize(img, (length, height), interpolation=cv2.INTER_CUBIC)
+# flip image
+def flip_image(img):
+    return cv2.flip(img, 1)
 
 #
-# pre-process the loaded image
-def preprocess_image(img):
-    img = crop(img)
-    #img = rgb2hsv(img)
-    img = resize(img, 128, 128)
-    img = normalize(img)
+# normalize the image data
+def normalize(img):
+    img = img.astype('float32')
+    img = img/255.0 - 0.5
     return img
 
-def generate_training_data():
-    steering_0 = 0
+def resize(img, width, height):
+    return cv2.resize(img, (width, height), interpolation=cv2.INTER_CUBIC)
+
+
+def process_image_dir():
+    paths  = []
+    angles = []
     csv = pd.read_csv(os.path.join(os.getcwd(), 'data', 'driving_log.csv'))
 
     for i, row in csv.iterrows():
-        random_num = np.random.randint(3)
-        steering_angle = row['steering']
+        angle = row['steering']
 
-        if random_num == 0:
-            # choose the center image
-            path = os.path.join(os.getcwd(), 'data', row['center'].strip())
-        elif random_num == 1:
-            # choose the left image
-            path = os.path.join(os.getcwd(), 'data', row['left'].strip())
-            steering_angle = steering_angle + 0.25
-        else:
-            # choose the right image
-            path = os.path.join(os.getcwd(), 'data', row['right'].strip())
-            steering_angle = steering_angle - 0.25
+        left_path = os.path.join(os.getcwd(), 'data', row['left'].strip())
+        paths.append(left_path)
+        angles.append(angle - STEERING_OFFSET)
 
-        img = load_image(path)
-        img = preprocess_image(img)
+        right_path = os.path.join(os.getcwd(), 'data', row['right'].strip())
+        paths.append(right_path)
+        angles.append(angle + STEERING_OFFSET)
+
+        if abs(angle) > 0.3:
+            center_path = os.path.join(os.getcwd(), 'data', row['center'].strip())
+            paths.append(center_path)
+            angles.append(angle)
+
+    return paths, angles
 
 
-        if abs(steering_angle) < 0.1:
-            steering_0 = steering_0 + 1
+def load_and_process_image(path, angle):
+    image = load_image(path)
+    image = crop(image)
+    image = resize(image, new_img_width, new_img_height)
+    steering_angle = angle
 
-        if steering_0 > num_load_0_steering:
-            continue
+    if np.random.randint(2) % 2 == 0:
+        image = flip_image(image)
+        steering_angle = -steering_angle
 
-        if abs(steering_angle) > 0.3:
-            h_img = cv2.flip(img, 1)
-            img_data.append(h_img)
-            angle_data.append(-steering_angle)
+    image = normalize(image)
 
-        img_data.append(img)
-        angle_data.append(steering_angle)
+    return image, steering_angle
 
+
+def model(load, shape):
+
+    model = Sequential()
+    #model.add(BatchNormalization(mode=2, axis=1, input_shape=shape))
+    model.add(Convolution2D(24, 5, 5, border_mode='valid', activation='elu', subsample=(2, 2), input_shape=shape))
+    model.add(Convolution2D(36, 5, 5, border_mode='valid', activation='elu', subsample=(2, 2)))
+    model.add(Convolution2D(48, 5, 5, border_mode='valid', activation='elu', subsample=(2, 2)))
+    model.add(Convolution2D(64, 3, 3, border_mode='valid', activation='elu', subsample=(1, 1)))
+    model.add(Convolution2D(64, 3, 3, border_mode='valid', activation='elu', subsample=(1, 1)))
+
+    model.add(Flatten())
+
+    model.add(Dense(1164, activation='elu'))
+    model.add(Dense(100, activation='elu'))
+    model.add(Dense(50, activation='elu'))
+    model.add(Dense(10, activation='elu'))
+    model.add(Dense(1, activation='linear'))
+
+    model.compile(loss='mse', optimizer="adam")
+    return model
 
 
 def get_model():
@@ -99,32 +116,33 @@ def get_model():
 
     #
     # Modeling NVIDIA network here, add Batchnormalization
-    model.add(BatchNormalization(mode=2, axis=1, input_shape=(128, 128, 3)))
+    model.add(BatchNormalization(mode=2, axis=1, input_shape=(new_img_width, new_img_height, 3)))
 
     #
     # Convolution layer 1
-    model.add(Convolution2D(24, 5, 5, border_mode='valid', activation='relu', subsample=(1, 1)))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Convolution2D(24, 5, 5, border_mode='valid', activation='relu', subsample=(2, 2)))
+    #                        input_shape=(new_img_width, new_img_width, 3)))
+    #model.add(MaxPooling2D(pool_size=(2, 2)))
 
     #
     # Convolution layer 2
-    model.add(Convolution2D(36, 5, 5, border_mode='valid', activation='relu', subsample=(1, 1)))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Convolution2D(36, 5, 5, border_mode='valid', activation='relu', subsample=(2, 2)))
+    #model.add(MaxPooling2D(pool_size=(2, 2)))
 
     #
     # Convolution layer 3
-    model.add(Convolution2D(48, 5, 5, border_mode='valid', activation='relu', subsample=(1, 1)))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Convolution2D(48, 5, 5, border_mode='valid', activation='relu', subsample=(2, 2)))
+    #model.add(MaxPooling2D(pool_size=(2, 2)))
 
     #
     # Convolution layer 4
     model.add(Convolution2D(64, 3, 3, border_mode='valid', activation='relu', subsample=(1, 1)))
-    model.add(MaxPooling2D(pool_size=(1, 1)))
+    #model.add(MaxPooling2D(pool_size=(1, 1)))
 
     #
     # Convolution layer 5
     model.add(Convolution2D(64, 3, 3, border_mode='valid', activation='relu', subsample=(1, 1)))
-    model.add(MaxPooling2D(pool_size=(1, 1)))
+    #model.add(MaxPooling2D(pool_size=(1, 1)))
 
     #
     # Flatten
@@ -136,7 +154,7 @@ def get_model():
 
     #
     # add some dropout layer to avoid overfitting
-    model.add(Dropout(0.2))
+    #model.add(Dropout(0.5))
 
     #
     # Dense layer 2
@@ -144,7 +162,7 @@ def get_model():
 
     #
     # add some dropout layer to avoid overfitting
-    model.add(Dropout(0.2))
+    #model.add(Dropout(0.5))
 
     #
     # Dense layer 3
@@ -152,7 +170,7 @@ def get_model():
 
     #
     # add some dropout layer to avoid overfitting
-    model.add(Dropout(0.2))
+    #model.add(Dropout(0.5))
 
     #
     # Dense layer 4
@@ -160,7 +178,7 @@ def get_model():
 
     #
     # add some dropout layer to avoid overfitting
-    model.add(Dropout(0.2))
+    #model.add(Dropout(0.5))
 
     #
     # Output layer
@@ -169,37 +187,27 @@ def get_model():
     return model
 
 
-def training_generator(num_batches, batch_size):
+def training_generator(batch_size, features, labels):
 
     while True:
-        x = np.zeros((batch_size, 128, 128, 3))
-        y = np.zeros(batch_size)
+        x = []
+        y = []
 
-        for n in range(num_batches):
-            begin = (n * batch_size)
-            end   = (n * batch_size) + batch_size
+        for i in range(batch_size):
+            index = np.random.randint(len(features) - 1)
 
-            x = img_data[begin:end]
-            y = angle_data[begin:end]
+            image, angle = load_and_process_image(features[index], labels[index])
+            x.append(image)
+            y.append(angle)
 
-            yield x, y
+        yield np.array(x), np.array(y)
 
 def main():
-
-    #
-    # Number of epochs
-    nb_epoch = 5
-
-    #
-    # batch size
-    n_batch_size = 64
-
     #
     # Generate training data
-    generate_training_data()
-    print("Data generate done")
-    #num_batches = int(math.ceil(len(steering_data) / float(n_batch_size)))
-    num_batches = int(len(steering_data) / float(n_batch_size))
+    features, labels = process_image_dir()
+    print("Data generate done: %d" % len(features))
+
 
     #
     # Get model & compile
@@ -209,9 +217,9 @@ def main():
 
     print("Model compiled")
 
-    model.fit_generator(training_generator(num_batches, n_batch_size),
-                        samples_per_epoch=num_batches * n_batch_size,
-                        nb_epoch=1,
+    model.fit_generator(training_generator(128, features, labels),
+                        samples_per_epoch=8192,
+                        nb_epoch=2,
                         verbose=1,
                         callbacks=[],
                         validation_data=None)

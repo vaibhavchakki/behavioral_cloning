@@ -10,44 +10,20 @@ import json
 from keras.models import Model, Sequential
 from keras.layers import Dense, Dropout, Input, Convolution2D, MaxPooling2D, Flatten, Lambda
 from keras.layers.normalization import BatchNormalization
+from keras.preprocessing.image import img_to_array, load_img, flip_axis, random_shift
 from keras.optimizers import Adam
 import sklearn.metrics as metrics
+from PIL import ImageEnhance
 
 
-new_img_width  = 80
-new_img_height = 80
-STEERING_OFFSET = 0.30
+new_image_shape = (80, 80)
+STEERING_OFFSET = 0.20
 
-#
-# crop the image 20 pixels from top and 25 pixels from bottom
-def crop(img):
-    img = img[20:135,:,:]
-    return img
 
-#
-# convert image from RGB to HSV
-def rgb2hsv(img):
-    return cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
-#
-# read image from path
-def load_image(path):
-    return cv2.imread(path)
-
-#
-# flip image
-def flip_image(img):
-    return cv2.flip(img, 1)
-
-#
-# normalize the image data
-def normalize(img):
-    img = img.astype('float32')
-    img = img/255.0 - 0.5
-    return img
-
-def resize(img, width, height):
-    return cv2.resize(img, (width, height), interpolation=cv2.INTER_CUBIC)
+def brighten_image(image):
+    factor = np.random.uniform(0.75, 1.25)
+    enhancer = ImageEnhance.Brightness(image)
+    return enhancer.enhance(factor)
 
 
 def process_image_dir():
@@ -57,14 +33,18 @@ def process_image_dir():
 
     for i, row in csv.iterrows():
         angle = row['steering']
+        speed = row['speed']
 
         left_path = os.path.join(os.getcwd(), 'data', row['left'].strip())
         paths.append(left_path)
-        angles.append(angle - STEERING_OFFSET)
+        angles.append(angle + STEERING_OFFSET)
 
         right_path = os.path.join(os.getcwd(), 'data', row['right'].strip())
         paths.append(right_path)
-        angles.append(angle + STEERING_OFFSET)
+        angles.append(angle - STEERING_OFFSET)
+
+        if (speed < 20.) and angle == 0.:
+            continue
 
         if abs(angle) > 0.3:
             center_path = os.path.join(os.getcwd(), 'data', row['center'].strip())
@@ -75,25 +55,33 @@ def process_image_dir():
 
 
 def load_and_process_image(path, angle):
-    image = load_image(path)
-    image = crop(image)
-    image = resize(image, new_img_width, new_img_height)
+    image = load_img(path, target_size=new_image_shape)
     steering_angle = angle
 
-    if np.random.randint(2) % 2 == 0:
-        image = flip_image(image)
+    if np.random.uniform() < 0.5:
+        image = brighten_image(image)
+
+    image = img_to_array(image)
+
+    if np.random.uniform() < 0.5:
+        image = flip_axis(image, 1)
         steering_angle = -steering_angle
 
-    image = normalize(image)
+    #if np.random.uniform() < 0.5:
+    #    image = random_shift(image, 0, 0.2, 0, 1, 2)
+
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2YUV)
+    image = (image/255. - 0.5).astype('float32')
 
     return image, steering_angle
 
 
-def model(load, shape):
+def get_model(shape):
 
     model = Sequential()
     #model.add(BatchNormalization(mode=2, axis=1, input_shape=shape))
-    model.add(Convolution2D(24, 5, 5, border_mode='valid', activation='elu', subsample=(2, 2), input_shape=shape))
+    model.add(Convolution2D(24, 5, 5, border_mode='valid', activation='elu', subsample=(2, 2),
+                            input_shape=(shape[0], shape[1], 3)))
     model.add(Convolution2D(36, 5, 5, border_mode='valid', activation='elu', subsample=(2, 2)))
     model.add(Convolution2D(48, 5, 5, border_mode='valid', activation='elu', subsample=(2, 2)))
     model.add(Convolution2D(64, 3, 3, border_mode='valid', activation='elu', subsample=(1, 1)))
@@ -106,83 +94,6 @@ def model(load, shape):
     model.add(Dense(50, activation='elu'))
     model.add(Dense(10, activation='elu'))
     model.add(Dense(1, activation='linear'))
-
-    model.compile(loss='mse', optimizer="adam")
-    return model
-
-
-def get_model():
-    model = Sequential()
-
-    #
-    # Modeling NVIDIA network here, add Batchnormalization
-    model.add(BatchNormalization(mode=2, axis=1, input_shape=(new_img_width, new_img_height, 3)))
-
-    #
-    # Convolution layer 1
-    model.add(Convolution2D(24, 5, 5, border_mode='valid', activation='relu', subsample=(2, 2)))
-    #                        input_shape=(new_img_width, new_img_width, 3)))
-    #model.add(MaxPooling2D(pool_size=(2, 2)))
-
-    #
-    # Convolution layer 2
-    model.add(Convolution2D(36, 5, 5, border_mode='valid', activation='relu', subsample=(2, 2)))
-    #model.add(MaxPooling2D(pool_size=(2, 2)))
-
-    #
-    # Convolution layer 3
-    model.add(Convolution2D(48, 5, 5, border_mode='valid', activation='relu', subsample=(2, 2)))
-    #model.add(MaxPooling2D(pool_size=(2, 2)))
-
-    #
-    # Convolution layer 4
-    model.add(Convolution2D(64, 3, 3, border_mode='valid', activation='relu', subsample=(1, 1)))
-    #model.add(MaxPooling2D(pool_size=(1, 1)))
-
-    #
-    # Convolution layer 5
-    model.add(Convolution2D(64, 3, 3, border_mode='valid', activation='relu', subsample=(1, 1)))
-    #model.add(MaxPooling2D(pool_size=(1, 1)))
-
-    #
-    # Flatten
-    model.add(Flatten())
-
-    #
-    # Dense layer 1
-    model.add(Dense(1164, activation='relu'))
-
-    #
-    # add some dropout layer to avoid overfitting
-    #model.add(Dropout(0.5))
-
-    #
-    # Dense layer 2
-    model.add(Dense(100, activation='relu'))
-
-    #
-    # add some dropout layer to avoid overfitting
-    #model.add(Dropout(0.5))
-
-    #
-    # Dense layer 3
-    model.add(Dense(50, activation='relu'))
-
-    #
-    # add some dropout layer to avoid overfitting
-    #model.add(Dropout(0.5))
-
-    #
-    # Dense layer 4
-    model.add(Dense(10, activation='relu'))
-
-    #
-    # add some dropout layer to avoid overfitting
-    #model.add(Dropout(0.5))
-
-    #
-    # Output layer
-    model.add(Dense(1, activation='relu'))
 
     return model
 
@@ -202,7 +113,7 @@ def training_generator(batch_size, features, labels):
 
         yield np.array(x), np.array(y)
 
-def main():
+def train_model():
     #
     # Generate training data
     features, labels = process_image_dir()
@@ -211,15 +122,15 @@ def main():
 
     #
     # Get model & compile
-    model = get_model()
-    adam = Adam(lr=0.0001)
+    model = get_model(new_image_shape)
+    adam = Adam(lr=0.001)
     model.compile(loss='mse', optimizer='adam', metrics=['mse', 'accuracy'])
 
     print("Model compiled")
 
-    model.fit_generator(training_generator(128, features, labels),
-                        samples_per_epoch=8192,
-                        nb_epoch=2,
+    model.fit_generator(training_generator(256, features, labels),
+                        samples_per_epoch=20480,
+                        nb_epoch=4,
                         verbose=1,
                         callbacks=[],
                         validation_data=None)
@@ -232,6 +143,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
-
-
+    train_model()

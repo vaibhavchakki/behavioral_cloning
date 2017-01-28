@@ -27,16 +27,12 @@ prev_image_array = None
 
 import cv2
 
-def normalize(X):
-    X = X.astype('float32')
-    X = X/255.0 - 0.5
-    return X
-
-def preprocess_image(img):
-    img = img[20:135,:, :]
-    img = cv2.resize(img, (80, 80), interpolation=cv2.INTER_CUBIC)
-    img = normalize(img)
-    return img
+def preprocess_image(image):
+    image = image.resize((80, 80))
+    image = img_to_array(image)
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2YUV)
+    image = (image/255. - 0.5).astype('float32')
+    return image
     
 
 @sio.on('telemetry')
@@ -50,13 +46,12 @@ def telemetry(sid, data):
     # The current image from the center camera of the car
     imgString = data["image"]
     image = Image.open(BytesIO(base64.b64decode(imgString)))
-    image_t = np.asarray(image)
-    image_array = preprocess_image(image_t)
+    image_array = preprocess_image(image)
     transformed_image_array = image_array[None, :, :, :]
     # This model currently assumes that the features of the model are just the images. Feel free to change this.
-    steering_angle = 1. * float(model.predict(transformed_image_array, batch_size=1))
+    steering_angle = float(model.predict(transformed_image_array, batch_size=1))
     # The driving model currently just outputs a constant throttle. Feel free to edit this.
-    throttle = 0.1
+    throttle = 0.2
     print(steering_angle, throttle)
     send_control(steering_angle, throttle)
 
